@@ -42,11 +42,11 @@ class RAGClient:
         *,
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = 60.0,
-        _exchange_url: str | None = None,
+        exchange_url: str | None = None,
     ):
         self._loop = _BackgroundLoop()
         self._async: AsyncRAGClient = self._loop.run(
-            _make_async_client(api_key, base_url, timeout, _exchange_url)
+            _make_async_client(api_key, base_url, timeout, exchange_url)
         )
 
     def close(self) -> None:
@@ -145,4 +145,4 @@ class RAGClient:
 async def _make_async_client(
     api_key: str | None, base_url: str, timeout: float, exchange_url: str | None,
 ) -> AsyncRAGClient:
-    return AsyncRAGClient(api_key, base_url=base_url, timeout=timeout, _exchange_url=exchange_url)
+    return AsyncRAGClient(api_key, base_url=base_url, timeout=timeout, exchange_url=exchange_url)

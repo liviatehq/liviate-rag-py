@@ -30,20 +30,20 @@ class AsyncRAGClient:
         *,
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = 60.0,
-        _exchange_url: str | None = None,
+        exchange_url: str | None = None,
     ):
-        """``_exchange_url`` is not part of the public API -- it exists so tests can point the
-        vector-store's token-exchange call at a local mock server instead of the real production
-        endpoint (the mock's own response then supplies a data-plane URL right back, same as the
-        real exchange endpoint does -- see _vectorstore.py). Every real caller should rely on the
-        default in _vectorstore.py."""
+        """``exchange_url`` overrides where the vector store's token-exchange call goes (default:
+        console.liviate.com -- see _vectorstore.py). It lives on a different host than
+        ``base_url`` even in production, so pointing ``base_url`` at a non-default environment
+        (e.g. a staging deployment) does *not* redirect it automatically; pass ``exchange_url``
+        explicitly too in that case. Tests use this to point it at a local mock server."""
         self._api_key = resolve_api_key(api_key)
         self._base_url = base_url
         self._http: httpx.AsyncClient = build_async_httpx_client(self._api_key, base_url, timeout)
         self._openai: AsyncOpenAI = build_async_openai_client(self._api_key, base_url)
         vectorstore_kwargs = {}
-        if _exchange_url is not None:
-            vectorstore_kwargs["exchange_url"] = _exchange_url
+        if exchange_url is not None:
+            vectorstore_kwargs["exchange_url"] = exchange_url
         self._vectorstore = VectorStoreClient(self._api_key, timeout, **vectorstore_kwargs)
 
     async def close(self) -> None:

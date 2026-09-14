@@ -5,7 +5,10 @@ these tests assert that shared path stays intact (both produce identical
 
 from __future__ import annotations
 
+import pytest
 from pytest_httpserver import HTTPServer
+
+from liviate_rag.exceptions import LiviateError
 
 
 def _mock_retrieval_chain(mock_server: HTTPServer) -> None:
@@ -87,3 +90,31 @@ async def test_query_reuses_retrieve_and_adds_generation(async_client, mock_serv
     assert result.sources[0].text == "We have free parking."
     assert result.usage.generation_tokens == 8
     assert result.timing.generate_ms >= 0
+
+
+async def test_retrieve_raises_on_point_with_no_text_payload(async_client, mock_server: HTTPServer):
+    # A point written outside of ingest() (e.g. a direct upsert missing "text") must raise
+    # clearly rather than silently returning an empty-text source -- see _pipeline.py.
+    mock_server.expect_request("/v1/embeddings", method="POST").respond_with_json(
+        {
+            "object": "list",
+            "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2]}],
+            "model": "liviate/embedding",
+            "usage": {"prompt_tokens": 3, "total_tokens": 3},
+        }
+    )
+    mock_server.expect_request("/api/tenancy/vectordb/exchange-token/", method="POST").respond_with_json(
+        {
+            "token": "scoped-jwt",
+            "access": "r",
+            "expires_at": 9999999999,
+            "collection_name": "testtenant__hotel-kirstine",
+            "qdrant_url": mock_server.url_for("/").rstrip("/"),
+        }
+    )
+    mock_server.expect_request("/collections/testtenant__hotel-kirstine/points/query", method="POST").respond_with_json(
+        {"result": {"points": [{"id": "1", "score": 0.5, "payload": {"metadata": {"page": 1}}}]}}
+    )
+
+    with pytest.raises(LiviateError, match="no 'text' in its payload"):
+        await async_client.retrieve("Har I parkering?", collection="hotel-kirstine", top_k=5)

@@ -19,6 +19,7 @@ from openai import AsyncOpenAI
 from ._embed import DEFAULT_EMBED_MODEL, embed
 from ._rerank import DEFAULT_RERANK_MODEL, rerank
 from ._vectorstore import VectorStoreClient
+from .exceptions import LiviateError
 from .types import RankedDocument, RetrieveResult, Timing, Usage
 
 
@@ -30,15 +31,19 @@ async def vector_search(
     filter: dict | None,
 ) -> list[RankedDocument]:
     points = await vectorstore.search(collection, vector, top_k, filter)
-    return [
-        RankedDocument(
-            text=(p.get("payload") or {}).get("text", ""),
-            score=p["score"],
-            index=i,
-            metadata=(p.get("payload") or {}).get("metadata", {}),
+    results = []
+    for i, p in enumerate(points):
+        payload = p.get("payload") or {}
+        if "text" not in payload:
+            raise LiviateError(
+                f"Point {p.get('id')!r} in collection {collection!r} has no 'text' in its "
+                "payload -- was it written outside of ingest()? retrieve()/query() can't rank "
+                "or return a source with no text content."
+            )
+        results.append(
+            RankedDocument(text=payload["text"], score=p["score"], index=i, metadata=payload.get("metadata", {}))
         )
-        for i, p in enumerate(points)
-    ]
+    return results
 
 
 async def run_retrieval(

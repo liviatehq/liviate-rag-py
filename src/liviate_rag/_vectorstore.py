@@ -14,23 +14,39 @@ rather than guessed/hardcoded here, so this module never encodes an assumption a
 naming scheme or deployment topology.
 
 Never reference the underlying vector-store technology by name in this module, or anywhere else
-in the package -- see project brief.
+in the package -- see project brief. Even the exchange response's own field names (which do name
+it) are never echoed into an error message a caller could see -- see ``_field()`` below.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
 import httpx
 
 from ._http import raise_for_status
+from .exceptions import LiviateError
 
-EXCHANGE_URL = "https://console.liviate.com/api/tenancy/vectordb/exchange-token/"
+DEFAULT_EXCHANGE_URL = "https://console.liviate.com/api/tenancy/vectordb/exchange-token/"
 
 # Refresh this many seconds before the exchanged credential's real expiry, so an in-flight
 # request can never race a credential that expires mid-call.
 _REFRESH_MARGIN_S = 30.0
+
+
+def _field(body: dict, key: str, description: str) -> Any:
+    """Reads one field from the token-exchange response, raising a clear, non-leaking error
+    instead of a bare KeyError if the backend's response shape ever changes -- see module
+    docstring on why the raw field name (which names the underlying vector-store tech) never
+    reaches a caller-visible message."""
+    try:
+        return body[key]
+    except KeyError as exc:
+        raise LiviateError(
+            f"Vector store token exchange returned an unexpected response (missing {description})."
+        ) from exc
 
 
 class _CachedGrant:
@@ -53,13 +69,17 @@ class VectorStoreClient:
     ('rw') grant for the same collection are cached separately, since they're genuinely different
     credentials."""
 
-    def __init__(self, api_key: str, timeout: float, *, exchange_url: str = EXCHANGE_URL):
+    def __init__(self, api_key: str, timeout: float, *, exchange_url: str = DEFAULT_EXCHANGE_URL):
         self._api_key = api_key
         self._exchange_url = exchange_url
         self._exchange_http = httpx.AsyncClient(timeout=timeout)
         self._timeout = timeout
         self._data_http_by_base: dict[str, httpx.AsyncClient] = {}
         self._cache: dict[tuple[str, str], _CachedGrant] = {}
+        # One lock per (collection, access) key so concurrent callers hitting a cold/expired
+        # cache entry for the same key share a single exchange call instead of each firing their
+        # own -- e.g. asyncio.gather() over several retrieve() calls against the same collection.
+        self._locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     async def close(self) -> None:
         await self._exchange_http.aclose()
@@ -79,32 +99,45 @@ class VectorStoreClient:
         if cached is not None and cached.usable:
             return cached
 
-        data: dict[str, Any] = {"name": collection, "access": access}
-        if vector_size is not None:
-            # Lets the exchange endpoint auto-create the collection on first write -- an ingest
-            # caller already knows its embedding dimension (it just computed the vectors), so
-            # there's no need to require a separate "create the collection first" step through
-            # the console UI before a customer's very first ingest() can succeed.
-            data["vector_size"] = str(vector_size)
-        response = await self._exchange_http.post(
-            self._exchange_url,
-            headers={"Authorization": f"Bearer {self._api_key}"},
-            data=data,
-        )
-        await raise_for_status(response)
-        body = response.json()
-        # expires_at is a Unix timestamp (server clock), not a duration -- convert to a
-        # monotonic-relative TTL once here so _CachedGrant never has to compare against
-        # wall-clock time (which can jump; monotonic can't).
-        ttl_seconds = max(0.0, float(body["expires_at"]) - time.time())
-        grant = _CachedGrant(
-            token=body["token"],
-            data_plane_url=body["qdrant_url"],
-            real_collection_name=body["collection_name"],
-            ttl_seconds=ttl_seconds,
-        )
-        self._cache[key] = grant
-        return grant
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            # Re-check: another coroutine may have already refreshed this key while we were
+            # waiting for the lock.
+            cached = self._cache.get(key)
+            if cached is not None and cached.usable:
+                return cached
+
+            data: dict[str, Any] = {"name": collection, "access": access}
+            if vector_size is not None:
+                # Lets the exchange endpoint auto-create the collection on first write -- an
+                # ingest caller already knows its embedding dimension (it just computed the
+                # vectors), so there's no need to require a separate "create the collection
+                # first" step through the console UI before a customer's very first ingest()
+                # can succeed.
+                data["vector_size"] = str(vector_size)
+            # NOTE: this endpoint genuinely expects form-encoded data, unlike every other
+            # Liviate API call in this package (confirmed live: json= gets a 400 here). Verified
+            # against production -- don't "fix" this to json= again without re-confirming.
+            response = await self._exchange_http.post(
+                self._exchange_url,
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                data=data,
+            )
+            await raise_for_status(response)
+            body = response.json()
+            # expires_at is a Unix timestamp (server clock), not a duration -- convert to a
+            # monotonic-relative TTL once here so _CachedGrant never has to compare against
+            # wall-clock time (which can jump; monotonic can't).
+            expires_at = _field(body, "expires_at", "credential expiry")
+            ttl_seconds = max(0.0, float(expires_at) - time.time())
+            grant = _CachedGrant(
+                token=_field(body, "token", "data-plane credential"),
+                data_plane_url=_field(body, "qdrant_url", "data-plane URL"),
+                real_collection_name=_field(body, "collection_name", "tenant-namespaced collection name"),
+                ttl_seconds=ttl_seconds,
+            )
+            self._cache[key] = grant
+            return grant
 
     async def search(
         self, collection: str, vector: list[float], top_k: int, filter: dict | None,
