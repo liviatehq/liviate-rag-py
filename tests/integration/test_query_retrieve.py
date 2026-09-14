@@ -17,12 +17,29 @@ def _mock_retrieval_chain(mock_server: HTTPServer) -> None:
             "usage": {"prompt_tokens": 3, "total_tokens": 3},
         }
     )
-    mock_server.expect_request("/v1/collections/hotel-kirstine/search", method="POST").respond_with_json(
+    # Real contract: the SDK first exchanges api_key for a short-lived, collection-scoped
+    # credential (console's vectordb_exchange_token), then calls the vector store's OWN native
+    # query API directly with that credential, at the collection's real (tenant-namespaced) name
+    # and the data-plane URL the exchange response itself supplies -- see _vectorstore.py.
+    mock_server.expect_request("/api/tenancy/vectordb/exchange-token/", method="POST").respond_with_json(
         {
-            "results": [
-                {"id": "1", "score": 0.5, "text": "We have free parking.", "metadata": {"page": 1}},
-                {"id": "2", "score": 0.3, "text": "Breakfast is included.", "metadata": {"page": 2}},
-            ]
+            "token": "scoped-jwt-for-hotel-kirstine",
+            "access": "r",
+            "expires_at": 9999999999,
+            "collection_name": "testtenant__hotel-kirstine",
+            "qdrant_url": mock_server.url_for("/").rstrip("/"),
+        }
+    )
+    mock_server.expect_request("/collections/testtenant__hotel-kirstine/points/query", method="POST").respond_with_json(
+        {
+            "result": {
+                "points": [
+                    {"id": "1", "score": 0.5, "payload": {"text": "We have free parking.", "metadata": {"page": 1}}},
+                    {"id": "2", "score": 0.3, "payload": {"text": "Breakfast is included.", "metadata": {"page": 2}}},
+                ]
+            },
+            "status": "ok",
+            "time": 0.001,
         }
     )
     mock_server.expect_request("/v1/rerank", method="POST").respond_with_json(

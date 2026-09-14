@@ -17,19 +17,37 @@ from ._ingest.handlers import _DEFAULT_INGEST_TIMEOUT_S, ingest_source, wait_for
 from ._pipeline import run_retrieval
 from ._rerank import DEFAULT_RERANK_MODEL
 from ._rerank import rerank as _rerank
+from ._vectorstore import VectorStoreClient
 from .types import AsyncIngestJob, EmbedResult, IngestResult, QueryResult, RerankResult, RetrieveResult
 
 
 class AsyncRAGClient:
-    def __init__(self, api_key: str | None = None, *, base_url: str = DEFAULT_BASE_URL, timeout: float = 60.0):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        *,
+        base_url: str = DEFAULT_BASE_URL,
+        timeout: float = 60.0,
+        _exchange_url: str | None = None,
+    ):
+        """``_exchange_url`` is not part of the public API -- it exists so tests can point the
+        vector-store's token-exchange call at a local mock server instead of the real production
+        endpoint (the mock's own response then supplies a data-plane URL right back, same as the
+        real exchange endpoint does -- see _vectorstore.py). Every real caller should rely on the
+        default in _vectorstore.py."""
         self._api_key = resolve_api_key(api_key)
         self._base_url = base_url
         self._http: httpx.AsyncClient = build_async_httpx_client(self._api_key, base_url, timeout)
         self._openai: AsyncOpenAI = build_async_openai_client(self._api_key, base_url)
+        vectorstore_kwargs = {}
+        if _exchange_url is not None:
+            vectorstore_kwargs["exchange_url"] = _exchange_url
+        self._vectorstore = VectorStoreClient(self._api_key, timeout, **vectorstore_kwargs)
 
     async def close(self) -> None:
         await self._http.aclose()
         await self._openai.close()
+        await self._vectorstore.close()
 
     async def __aenter__(self) -> "AsyncRAGClient":
         return self
@@ -116,8 +134,8 @@ class AsyncRAGClient:
         rerank_model: str | None = DEFAULT_RERANK_MODEL,
     ) -> RetrieveResult:
         return await run_retrieval(
-            http=self._http, embed_client=self._openai, query=query, collection=collection,
-            top_k=top_k, filter=filter, rerank_model=rerank_model,
+            vectorstore=self._vectorstore, http=self._http, embed_client=self._openai, query=query,
+            collection=collection, top_k=top_k, filter=filter, rerank_model=rerank_model,
         )
 
     async def query(

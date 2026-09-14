@@ -1,11 +1,12 @@
 """Shared retrieval pipeline used by both query() and retrieve().
 
 Also owns vector_search(), the one place that talks to the managed vector
-database. NOTE: the search endpoint shape below is an assumption (agreed as
-a reasonable starting point, not yet verified against the live backend) —
-isolated here so a real spec lands as a one-function change. Never reference
-the underlying vector-store technology by name in this module, or anywhere
-else in the package — see project brief.
+database — via VectorStoreClient (see _vectorstore.py), never the plain
+`http` client used for /v1/ingest* (that one carries `api_key` straight
+through; the vector store needs a different, short-lived credential that
+_vectorstore.py obtains transparently). Never reference the underlying
+vector-store technology by name in this module, or anywhere else in the
+package — see project brief.
 """
 
 from __future__ import annotations
@@ -16,32 +17,33 @@ import httpx
 from openai import AsyncOpenAI
 
 from ._embed import DEFAULT_EMBED_MODEL, embed
-from ._http import raise_for_status
 from ._rerank import DEFAULT_RERANK_MODEL, rerank
+from ._vectorstore import VectorStoreClient
 from .types import RankedDocument, RetrieveResult, Timing, Usage
 
 
 async def vector_search(
-    http: httpx.AsyncClient,
+    vectorstore: VectorStoreClient,
     collection: str,
     vector: list[float],
     top_k: int,
     filter: dict | None,
 ) -> list[RankedDocument]:
-    body: dict = {"vector": vector, "top_k": top_k}
-    if filter:
-        body["filter"] = filter
-    response = await http.post(f"/v1/collections/{collection}/search", json=body)
-    await raise_for_status(response)
-    results = response.json()["results"]
+    points = await vectorstore.search(collection, vector, top_k, filter)
     return [
-        RankedDocument(text=r["text"], score=r["score"], index=i, metadata=r.get("metadata", {}))
-        for i, r in enumerate(results)
+        RankedDocument(
+            text=(p.get("payload") or {}).get("text", ""),
+            score=p["score"],
+            index=i,
+            metadata=(p.get("payload") or {}).get("metadata", {}),
+        )
+        for i, p in enumerate(points)
     ]
 
 
 async def run_retrieval(
     *,
+    vectorstore: VectorStoreClient,
     http: httpx.AsyncClient,
     embed_client: AsyncOpenAI,
     query: str,
@@ -60,7 +62,7 @@ async def run_retrieval(
     embed_vector = embed_result.vectors[0]
 
     retrieve_start = time.perf_counter()
-    candidates = await vector_search(http, collection, embed_vector, top_k, filter)
+    candidates = await vector_search(vectorstore, collection, embed_vector, top_k, filter)
     retrieve_ms = (time.perf_counter() - retrieve_start) * 1000
 
     usage = Usage(embed_tokens=embed_result.usage.tokens)
