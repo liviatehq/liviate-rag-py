@@ -14,7 +14,7 @@ from openai import AsyncOpenAI
 
 from .exceptions import RateLimitError
 
-DEFAULT_BASE_URL = "https://api.liviate.com"
+DEFAULT_BASE_URL = "https://liviate.com"
 
 
 def build_async_httpx_client(api_key: str, base_url: str, timeout: float) -> httpx.AsyncClient:
