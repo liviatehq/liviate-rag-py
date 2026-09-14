@@ -10,9 +10,11 @@ The key needs:
   - Vector Database scope enabled, with the "quickstart" collection allowed (or an empty
     collections list, which means "all collections")
   - a chat model on its allow-list if you want the generate() step -- this example uses
-    liviate/deepseek-v4-flash
+    deepinfra/deepseek-ai/DeepSeek-V4-Flash
 
 Create a key with this shape from the console: Inference -> API Keys -> Generate key.
+The key's own error message lists exactly which models it's allowed to use if this one
+isn't available to you (PermissionDeniedError: "key not allowed to access model").
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ import os
 from liviate_rag import RAGClient
 
 COLLECTION = "quickstart"
-GENERATION_MODEL = "liviate/deepseek-v4-flash"
+GENERATION_MODEL = "deepinfra/deepseek-ai/DeepSeek-V4-Flash"
 
 
 def main() -> None:
