@@ -70,9 +70,13 @@ class RAGClient:
         wait: bool = True,
         metadata: dict | None = None,
         timeout: float | None = None,
+        embed_model: str = "liviate/embedding",
     ) -> IngestResult | IngestJob:
         outcome = self._loop.run(
-            self._async.ingest(source, collection, source_type=source_type, wait=wait, metadata=metadata, timeout=timeout)
+            self._async.ingest(
+                source, collection, source_type=source_type, wait=wait, metadata=metadata,
+                timeout=timeout, embed_model=embed_model,
+            )
         )
         return outcome if wait else self._wrap_job(outcome)
 

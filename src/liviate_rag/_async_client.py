@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import uuid
 from collections.abc import AsyncIterator
 
 import httpx
@@ -12,8 +14,8 @@ from ._embed import DEFAULT_EMBED_MODEL
 from ._embed import embed as _embed
 from ._generate import generate as _generate
 from ._generate import generate_stream as _generate_stream
-from ._http import DEFAULT_BASE_URL, build_async_httpx_client, build_async_openai_client, raise_for_status
-from ._ingest.handlers import _DEFAULT_INGEST_TIMEOUT_S, ingest_source, wait_for_jobs
+from ._http import DEFAULT_BASE_URL, build_async_httpx_client, build_async_openai_client
+from ._ingest.handlers import run_ingest, run_ingest_with_timeout
 from ._pipeline import run_retrieval
 from ._rerank import DEFAULT_RERANK_MODEL
 from ._rerank import rerank as _rerank
@@ -66,21 +68,25 @@ class AsyncRAGClient:
         wait: bool = True,
         metadata: dict | None = None,
         timeout: float | None = None,
+        embed_model: str = DEFAULT_EMBED_MODEL,
     ) -> IngestResult | AsyncIngestJob:
-        outcome = await ingest_source(
-            http=self._http, source=source, collection=collection,
-            source_type=source_type, wait=wait, metadata=metadata, timeout=timeout,
+        """Extracts text, chunks it, embeds each chunk, and upserts it into the vector store --
+        entirely client-side (see _ingest/handlers.py). wait=False schedules this as a background
+        task and returns immediately rather than leaving anything running server-side."""
+        kwargs = dict(
+            embed_client=self._openai, vectorstore=self._vectorstore, source=source, collection=collection,
+            source_type=source_type, metadata=metadata, embed_model=embed_model,
         )
         if wait:
-            return outcome  # type: ignore[return-value]
+            return await run_ingest_with_timeout(**kwargs, timeout=timeout)
 
-        job_ids = outcome  # type: ignore[assignment]
-        effective_timeout = timeout if timeout is not None else _DEFAULT_INGEST_TIMEOUT_S
+        job_id = str(uuid.uuid4())
+        task = asyncio.create_task(run_ingest_with_timeout(**kwargs, timeout=timeout))
 
         async def _poll() -> IngestResult:
-            return await wait_for_jobs(self._http, job_ids, collection, effective_timeout)
+            return await task
 
-        return AsyncIngestJob(job_ids=job_ids, collection=collection, _poll_fn=_poll)
+        return AsyncIngestJob(job_ids=[job_id], collection=collection, _poll_fn=_poll)
 
     async def ingest_site(
         self,
@@ -92,27 +98,15 @@ class AsyncRAGClient:
         metadata: dict | None = None,
         timeout: float | None = None,
     ) -> IngestResult | AsyncIngestJob:
-        """Whole-site crawl, kept separate from ingest() by design (see
-        brief) — following internal links and respecting robots.txt is
-        assumed to happen server-side (POST /v1/ingest/site), not in this
-        SDK. Defaults to wait=False since crawls are long-running and a
-        blocking default would be a surprising foot-gun — the opposite
-        tradeoff from ingest()'s single-page default.
-        """
-        response = await self._http.post(
-            "/v1/ingest/site",
-            json={"url": source, "collection": collection, "max_pages": max_pages, "metadata": metadata or {}},
+        """Not yet implemented. Whole-site crawling (following internal links, respecting
+        robots.txt, paging through up to max_pages) is a genuinely separate feature from
+        ingest()'s single-source path -- it needs its own real engineering (crawl frontier,
+        politeness/rate limiting, dedup), not a rushed version bolted onto ingest()'s pipeline.
+        Raises rather than pretending to support this."""
+        raise NotImplementedError(
+            "ingest_site() is not yet implemented. Use ingest() with a list of individual page "
+            "URLs in the meantime -- it already accepts a batch of sources in one call."
         )
-        await raise_for_status(response)
-        job_id = response.json()["job_id"]
-        effective_timeout = timeout if timeout is not None else _DEFAULT_INGEST_TIMEOUT_S
-
-        async def _poll() -> IngestResult:
-            return await wait_for_jobs(self._http, [job_id], collection, effective_timeout)
-
-        if not wait:
-            return AsyncIngestJob(job_ids=[job_id], collection=collection, _poll_fn=_poll)
-        return await _poll()
 
     # -- embed / rerank ------------------------------------------------
 

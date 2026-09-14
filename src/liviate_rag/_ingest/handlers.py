@@ -1,13 +1,13 @@
-"""Ingest source I/O: HTTP submission + job polling for ingest()/ingest_site().
+"""Ingest pipeline: extract -> chunk -> embed -> upsert.
 
-ASSUMPTION (not yet verified against a real endpoint spec — flagged per the
-plan, same treatment as the rerank and vector-search assumptions): every
-ingest submission goes through POST /v1/ingest (or /v1/ingest/site for
-whole-site crawls) and returns {"job_id": ..., "status": ...}; job status is
-polled via GET /v1/ingest/jobs/{job_id} returning {"status":
-"queued"|"running"|"done"|"failed", "result": {...} | null, "error": str |
-null}. wait=True just means "poll until done/failed before returning" —
-there is no separate synchronous ingest code path.
+Fully client-side and synchronous -- there is no server-side ingest job.
+A source (file/text/url/stream) is turned into plain text (extract.py),
+split into chunks (chunk.py), embedded via the same embed() the rest of
+the package already uses, then written directly to the vector store via
+VectorStoreClient.upsert() (the same token-exchange path vector_search()
+uses). wait=False still returns immediately -- the work is scheduled as
+a background asyncio task rather than left running server-side, and the
+returned job object awaits that task on result()/wait().
 """
 
 from __future__ import annotations
@@ -15,19 +15,21 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import time
+import uuid
 from typing import Any
 
 import httpx
 import magic
+from openai import AsyncOpenAI
 
-from .._http import raise_for_status
-from ..exceptions import IngestTimeout, LiviateError, UnsupportedFileType
+from .._embed import embed as _embed
+from ..exceptions import IngestTimeout, UnsupportedFileType
 from ..types import IngestResult
+from .chunk import chunk_text
 from .detect import Classification, classify
+from .extract import extract_text
 
 _DEFAULT_INGEST_TIMEOUT_S = 120.0
-_POLL_INTERVAL_S = 1.0
 
 _MIME_MAP = {
     "application/pdf": "pdf",
@@ -70,161 +72,125 @@ def sniff_file_type(data: bytes) -> str:
     )
 
 
-async def _submit_json(http: httpx.AsyncClient, payload: dict) -> str:
-    response = await http.post("/v1/ingest", json=payload)
-    await raise_for_status(response)
-    return response.json()["job_id"]
-
-
-async def _submit_file_bytes(
-    http: httpx.AsyncClient, data: bytes, collection: str, metadata: dict | None, filename: str,
-) -> str:
-    source_type = sniff_file_type(data)
-    response = await http.post(
-        "/v1/ingest",
-        data={"collection": collection, "metadata": json.dumps(metadata or {}), "source_type": source_type},
-        files={"file": (filename, data)},
-    )
-    await raise_for_status(response)
-    return response.json()["job_id"]
-
-
-async def _submit_url(http: httpx.AsyncClient, url: str, collection: str, metadata: dict | None) -> str:
-    async with httpx.AsyncClient(follow_redirects=True) as web:
-        head = await web.head(url, timeout=15.0)
-        content_type = head.headers.get("content-type", "").split(";")[0].strip().lower()
-
-    if content_type in ("", "text/html"):
-        return await _submit_json(http, {"url": url, "collection": collection, "metadata": metadata or {}})
-
-    async with httpx.AsyncClient(follow_redirects=True) as web:
-        download = await web.get(url, timeout=60.0)
-        download.raise_for_status()
-    filename = url.rsplit("/", 1)[-1] or "download"
-    return await _submit_file_bytes(http, download.content, collection, metadata, filename)
-
-
-async def _submit_one(
-    http: httpx.AsyncClient, classification: Classification, collection: str, metadata: dict | None,
-) -> str:
+async def _text_and_type_for(classification: Classification) -> tuple[str, str]:
     kind = classification.kind
     if kind == "text":
-        return await _submit_json(http, {"text": classification.value, "collection": collection, "metadata": metadata or {}})
+        return classification.value, "text"
     if kind == "file":
-        path = classification.value
-        return await _submit_file_bytes(http, path.read_bytes(), collection, metadata, filename=path.name)
+        data = classification.value.read_bytes()
+        source_type = sniff_file_type(data)
+        return extract_text(data, source_type), source_type
     if kind == "stream":
         data = classification.value.read()
         if isinstance(data, str):
             data = data.encode("utf-8")
-        return await _submit_file_bytes(http, data, collection, metadata, filename="stream")
+        source_type = sniff_file_type(data)
+        return extract_text(data, source_type), source_type
     if kind == "url":
-        return await _submit_url(http, classification.value, collection, metadata)
+        return await _fetch_url_text(classification.value)
     raise AssertionError(f"unreachable classification kind: {kind}")
 
 
-async def _fetch_job_status(http: httpx.AsyncClient, job_id: str) -> dict:
-    response = await http.get(f"/v1/ingest/jobs/{job_id}")
-    await raise_for_status(response)
-    return response.json()
+async def _fetch_url_text(url: str) -> tuple[str, str]:
+    async with httpx.AsyncClient(follow_redirects=True) as web:
+        response = await web.get(url, timeout=60.0)
+        response.raise_for_status()
+    content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
+    if content_type in ("", "text/html"):
+        return extract_text(response.content, "html"), "html"
+    source_type = sniff_file_type(response.content)
+    return extract_text(response.content, source_type), source_type
 
 
-async def wait_for_jobs(http: httpx.AsyncClient, job_ids: list[str], collection: str, timeout: float) -> IngestResult:
-    if not job_ids:
-        return IngestResult(chunks_created=0, source_type="batch", collection=collection, warnings=[], per_source=[])
+async def _ingest_one(
+    embed_client: AsyncOpenAI,
+    vectorstore: Any,
+    classification: Classification,
+    collection: str,
+    metadata: dict | None,
+    embed_model: str,
+) -> IngestResult:
+    text, source_type = await _text_and_type_for(classification)
+    chunks = chunk_text(text)
+    if not chunks:
+        return IngestResult(
+            chunks_created=0, source_type=source_type, collection=collection,
+            warnings=["no extractable text content"],
+        )
 
-    deadline = time.monotonic() + timeout
-    payloads: dict[str, dict] = {}
-    pending = set(job_ids)
-    while pending:
-        if time.monotonic() > deadline:
-            raise IngestTimeout()
-        for job_id in list(pending):
-            payload = await _fetch_job_status(http, job_id)
-            if payload["status"] in ("done", "failed"):
-                payloads[job_id] = payload
-                pending.discard(job_id)
-        if pending:
-            await asyncio.sleep(_POLL_INTERVAL_S)
-
-    return _aggregate(payloads, job_ids, collection)
+    embed_result = await _embed(embed_client, chunks, embed_model)
+    points = [
+        {"id": str(uuid.uuid4()), "vector": vector, "payload": {"text": chunk, "metadata": metadata or {}}}
+        for chunk, vector in zip(chunks, embed_result.vectors)
+    ]
+    await vectorstore.upsert(collection, points)
+    return IngestResult(chunks_created=len(chunks), source_type=source_type, collection=collection, warnings=[])
 
 
-def _aggregate(payloads: dict[str, dict], job_ids: list[str], collection: str) -> IngestResult:
-    is_batch = len(job_ids) > 1
+async def _ingest_batch(
+    embed_client: AsyncOpenAI,
+    vectorstore: Any,
+    items: list[Any],
+    collection: str,
+    metadata: dict | None,
+    embed_model: str,
+    source_type: str,
+) -> IngestResult:
     per_source: list[IngestResult] = []
     warnings: list[str] = []
     total_chunks = 0
-
-    for job_id in job_ids:
-        payload = payloads[job_id]
-        if payload["status"] == "failed":
-            error = payload.get("error") or "ingest job failed"
-            if not is_batch:
-                raise LiviateError(error)
-            item = IngestResult(chunks_created=0, source_type=payload.get("source_type", "unknown"), collection=collection, warnings=[error])
-        else:
-            r = payload["result"]
-            item = IngestResult(
-                chunks_created=r["chunks_created"], source_type=r["source_type"],
-                collection=collection, warnings=r.get("warnings", []),
-            )
-            total_chunks += item.chunks_created
-        per_source.append(item)
-        warnings.extend(item.warnings)
-
-    if not is_batch:
-        return per_source[0]
-
-    return IngestResult(chunks_created=total_chunks, source_type="batch", collection=collection, warnings=warnings, per_source=per_source)
-
-
-async def ingest_source(
-    *, http: httpx.AsyncClient, source: Any, collection: str, source_type: str,
-    wait: bool, metadata: dict | None, timeout: float | None,
-) -> IngestResult | list[str]:
-    """Returns an IngestResult when wait=True, or the submitted job_ids when
-    wait=False (the caller wraps those into an IngestJob/AsyncIngestJob).
-
-    Batch semantics: one failed item must not abort the others (per the API
-    reference) — submission failures (bad path, unsupported file type, ...)
-    are caught per item and folded into the aggregated result's warnings /
-    per_source rather than raised, as long as it's a multi-item batch. A
-    single (non-batch) source still raises directly.
-    """
-    classification = classify(source, source_type)
-    is_batch = classification.kind == "batch"
-
-    if is_batch:
-        job_ids: list[str] = []
-        local_errors: list[str] = []
-        for item in classification.value:
-            try:
-                item_classification = classify(item, source_type)
-                job_ids.append(await _submit_one(http, item_classification, collection, metadata))
-            except (ValueError, UnsupportedFileType, httpx.HTTPError) as exc:
-                local_errors.append(str(exc))
-    else:
-        job_ids = [await _submit_one(http, classification, collection, metadata)]
-        local_errors = []
-
-    if not wait:
-        return job_ids
-
-    effective_timeout = timeout if timeout is not None else _DEFAULT_INGEST_TIMEOUT_S
-    result = await wait_for_jobs(http, job_ids, collection, effective_timeout)
-
-    if not local_errors:
-        return result
-
-    error_items = [
-        IngestResult(chunks_created=0, source_type="unknown", collection=collection, warnings=[e])
-        for e in local_errors
-    ]
+    for item in items:
+        try:
+            item_classification = classify(item, source_type)
+            result = await _ingest_one(embed_client, vectorstore, item_classification, collection, metadata, embed_model)
+        except (ValueError, UnsupportedFileType, httpx.HTTPError) as exc:
+            result = IngestResult(chunks_created=0, source_type="unknown", collection=collection, warnings=[str(exc)])
+        per_source.append(result)
+        warnings.extend(result.warnings)
+        total_chunks += result.chunks_created
     return IngestResult(
-        chunks_created=result.chunks_created,
-        source_type="batch",
-        collection=collection,
-        warnings=result.warnings + local_errors,
-        per_source=(result.per_source or [result]) + error_items,
+        chunks_created=total_chunks, source_type="batch", collection=collection,
+        warnings=warnings, per_source=per_source,
     )
+
+
+async def run_ingest(
+    *,
+    embed_client: AsyncOpenAI,
+    vectorstore: Any,
+    source: Any,
+    collection: str,
+    source_type: str,
+    metadata: dict | None,
+    embed_model: str,
+) -> IngestResult:
+    """The actual synchronous ingest work -- extract, chunk, embed, upsert. Shared by both the
+    wait=True (awaited directly) and wait=False (scheduled as a background task) paths."""
+    classification = classify(source, source_type)
+    if classification.kind == "batch":
+        return await _ingest_batch(embed_client, vectorstore, classification.value, collection, metadata, embed_model, source_type)
+    return await _ingest_one(embed_client, vectorstore, classification, collection, metadata, embed_model)
+
+
+async def run_ingest_with_timeout(
+    *,
+    embed_client: AsyncOpenAI,
+    vectorstore: Any,
+    source: Any,
+    collection: str,
+    source_type: str,
+    metadata: dict | None,
+    embed_model: str,
+    timeout: float | None,
+) -> IngestResult:
+    effective_timeout = timeout if timeout is not None else _DEFAULT_INGEST_TIMEOUT_S
+    try:
+        return await asyncio.wait_for(
+            run_ingest(
+                embed_client=embed_client, vectorstore=vectorstore, source=source, collection=collection,
+                source_type=source_type, metadata=metadata, embed_model=embed_model,
+            ),
+            timeout=effective_timeout,
+        )
+    except asyncio.TimeoutError as exc:
+        raise IngestTimeout() from exc

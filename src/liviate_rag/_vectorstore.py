@@ -73,16 +73,23 @@ class VectorStoreClient:
             self._data_http_by_base[base_url] = client
         return client
 
-    async def _grant_for(self, collection: str, access: str) -> _CachedGrant:
+    async def _grant_for(self, collection: str, access: str, vector_size: int | None = None) -> _CachedGrant:
         key = (collection, access)
         cached = self._cache.get(key)
         if cached is not None and cached.usable:
             return cached
 
+        data: dict[str, Any] = {"name": collection, "access": access}
+        if vector_size is not None:
+            # Lets the exchange endpoint auto-create the collection on first write -- an ingest
+            # caller already knows its embedding dimension (it just computed the vectors), so
+            # there's no need to require a separate "create the collection first" step through
+            # the console UI before a customer's very first ingest() can succeed.
+            data["vector_size"] = str(vector_size)
         response = await self._exchange_http.post(
             self._exchange_url,
             headers={"Authorization": f"Bearer {self._api_key}"},
-            data={"name": collection, "access": access},
+            data=data,
         )
         await raise_for_status(response)
         body = response.json()
@@ -117,7 +124,8 @@ class VectorStoreClient:
     async def upsert(self, collection: str, points: list[dict[str, Any]]) -> None:
         """points: ``[{"id": ..., "vector": [...], "payload": {"text": ..., "metadata": {...}}}]``
         -- ``id`` must be a UUID string or unsigned integer (the data-plane's own requirement)."""
-        grant = await self._grant_for(collection, "rw")
+        vector_size = len(points[0]["vector"]) if points else None
+        grant = await self._grant_for(collection, "rw", vector_size=vector_size)
         response = await self._data_http_for(grant.data_plane_url).put(
             f"/collections/{grant.real_collection_name}/points",
             headers={"Authorization": f"Bearer {grant.token}"},
