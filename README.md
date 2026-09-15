@@ -74,11 +74,3 @@ pip install -e ".[dev]"
 pytest tests/unit tests/integration   # no network/credentials required
 LIVIATE_E2E=1 pytest tests/e2e         # real environment, run manually
 ```
-
-## Status
-
-`0.1.0` is published on [TestPyPI](https://test.pypi.org/project/liviate-rag/)
-and verified end-to-end against production (`ingest` → `retrieve` →
-`query`, including generation). Not yet on the real PyPI. `ingest_site()`
-is not yet implemented (see above); `PartialIngestError` is defined but not
-yet raised anywhere (see `exceptions.py` for why).
