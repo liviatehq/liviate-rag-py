@@ -67,6 +67,29 @@ Whole-site crawling (`ingest_site()`) is **not yet implemented** — it
 raises `NotImplementedError`. Use `ingest()` with a list of individual page
 URLs in the meantime; it already accepts a batch of sources in one call.
 
+If you ingest into a collection with a non-default `embed_model=`, pass the
+same `embed_model=` to `retrieve()`/`query()` when querying it — a query
+embedded with a different model than the collection's vectors either
+returns garbage or fails outright on a dimension mismatch.
+
+## Removing content
+
+```python
+result = client.ingest("handbook.pdf", collection="hotel-kirstine")
+client.delete("hotel-kirstine", ids=result.point_ids)          # by id
+client.delete("hotel-kirstine", filter={"must": [...]})        # by metadata filter
+```
+
+## Errors
+
+Every error from the Liviate API — whatever the underlying transport,
+including calls routed through the `openai` client for `embed()`/`query()`'s
+generation step — surfaces as this package's own exception hierarchy
+(`liviate_rag.LiviateError` and subclasses: `APIError`, `RateLimitError`,
+`UnsupportedFileType`, `IngestTimeout`), never a raw `httpx`/`openai`
+exception. The one deliberate exception: `ingest()` raises the builtin
+`ValueError` when it can't classify a source.
+
 ## Development
 
 ```bash

@@ -110,10 +110,30 @@ class RAGClient:
     def rerank(self, query: str, documents: list[str], model: str = "liviate/rerank") -> RerankResult:
         return self._loop.run(self._async.rerank(query, documents, model))
 
+    # -- delete ------------------------------------------------
+
+    def delete(self, collection: str, *, ids: list[str] | None = None, filter: dict | None = None) -> None:
+        self._loop.run(self._async.delete(collection, ids=ids, filter=filter))
+
     # -- retrieve / query ------------------------------------------------
 
-    def retrieve(self, query: str, collection: str, *, top_k: int = 5, filter: dict | None = None) -> RetrieveResult:
-        return self._loop.run(self._async.retrieve(query, collection, top_k=top_k, filter=filter))
+    def retrieve(
+        self,
+        query: str,
+        collection: str,
+        *,
+        top_k: int = 5,
+        filter: dict | None = None,
+        embed_model: str = "liviate/embedding",
+        rerank_model: str | None = "liviate/rerank",
+    ) -> RetrieveResult:
+        """``embed_model`` must match whatever model the collection was
+        ingested with (see ``ingest(..., embed_model=...)``)."""
+        return self._loop.run(
+            self._async.retrieve(
+                query, collection, top_k=top_k, filter=filter, embed_model=embed_model, rerank_model=rerank_model,
+            )
+        )
 
     def query(
         self,
@@ -123,17 +143,28 @@ class RAGClient:
         model: str,
         top_k: int = 5,
         filter: dict | None = None,
+        embed_model: str = "liviate/embedding",
+        rerank_model: str | None = "liviate/rerank",
         stream: bool = False,
     ) -> QueryResult | Iterator[str]:
         if stream:
-            return self._sync_stream(query, collection, model, top_k, filter)
+            return self._sync_stream(query, collection, model, top_k, filter, embed_model, rerank_model)
         return self._loop.run(
-            self._async.query(query, collection, model=model, top_k=top_k, filter=filter, stream=False)
+            self._async.query(
+                query, collection, model=model, top_k=top_k, filter=filter,
+                embed_model=embed_model, rerank_model=rerank_model, stream=False,
+            )
         )
 
-    def _sync_stream(self, query: str, collection: str, model: str, top_k: int, filter: dict | None) -> Iterator[str]:
+    def _sync_stream(
+        self, query: str, collection: str, model: str, top_k: int, filter: dict | None,
+        embed_model: str, rerank_model: str | None,
+    ) -> Iterator[str]:
         async_gen = self._loop.run(
-            self._async.query(query, collection, model=model, top_k=top_k, filter=filter, stream=True)
+            self._async.query(
+                query, collection, model=model, top_k=top_k, filter=filter,
+                embed_model=embed_model, rerank_model=rerank_model, stream=True,
+            )
         )
         while True:
             try:

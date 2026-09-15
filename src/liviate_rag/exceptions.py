@@ -45,8 +45,24 @@ class PartialIngestError(LiviateError):
 
 
 class RateLimitError(LiviateError):
-    """Raised on HTTP 429 responses from any Liviate backend."""
+    """Raised on HTTP 429 responses from any Liviate backend, including
+    ones surfaced through the openai client (embed(), query()'s generation
+    step) -- wrapped into this so `except RateLimitError` (or the broader
+    `except LiviateError`) catches it regardless of which transport hit
+    the limit."""
 
     def __init__(self, message: str, retry_after: float | None = None):
         super().__init__(message)
         self.retry_after = retry_after
+
+
+class APIError(LiviateError):
+    """Any other non-2xx response from a Liviate backend (not a rate limit
+    -- see RateLimitError). Wraps both the plain httpx-based calls (ingest,
+    vector store, rerank) and errors surfaced through the openai client
+    (embed(), generation), so `except LiviateError` reliably catches
+    backend failures no matter which transport made the call."""
+
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code

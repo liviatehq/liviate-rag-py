@@ -23,7 +23,7 @@ import magic
 from openai import AsyncOpenAI
 
 from .._embed import embed as _embed
-from ..exceptions import IngestTimeout, UnsupportedFileType
+from ..exceptions import IngestTimeout, LiviateError, UnsupportedFileType
 from ..types import IngestResult
 from .chunk import chunk_text
 from .detect import Classification, classify
@@ -119,12 +119,16 @@ async def _ingest_one(
         )
 
     embed_result = await _embed(embed_client, chunks, embed_model)
+    point_ids = [str(uuid.uuid4()) for _ in chunks]
     points = [
-        {"id": str(uuid.uuid4()), "vector": vector, "payload": {"text": chunk, "metadata": metadata or {}}}
-        for chunk, vector in zip(chunks, embed_result.vectors)
+        {"id": point_id, "vector": vector, "payload": {"text": chunk, "metadata": metadata or {}}}
+        for point_id, chunk, vector in zip(point_ids, chunks, embed_result.vectors)
     ]
     await vectorstore.upsert(collection, points)
-    return IngestResult(chunks_created=len(chunks), source_type=source_type, collection=collection, warnings=[])
+    return IngestResult(
+        chunks_created=len(chunks), source_type=source_type, collection=collection,
+        warnings=[], point_ids=point_ids,
+    )
 
 
 async def _ingest_batch(
@@ -143,14 +147,15 @@ async def _ingest_batch(
         try:
             item_classification = classify(item, source_type)
             result = await _ingest_one(embed_client, vectorstore, item_classification, collection, metadata, embed_model)
-        except (ValueError, UnsupportedFileType, httpx.HTTPError) as exc:
+        except (ValueError, LiviateError, httpx.HTTPError) as exc:
             result = IngestResult(chunks_created=0, source_type="unknown", collection=collection, warnings=[str(exc)])
         per_source.append(result)
         warnings.extend(result.warnings)
         total_chunks += result.chunks_created
+    point_ids = [pid for r in per_source for pid in r.point_ids]
     return IngestResult(
         chunks_created=total_chunks, source_type="batch", collection=collection,
-        warnings=warnings, per_source=per_source,
+        warnings=warnings, per_source=per_source, point_ids=point_ids,
     )
 
 

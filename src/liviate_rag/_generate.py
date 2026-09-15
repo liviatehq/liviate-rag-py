@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 
 from openai import AsyncOpenAI
 
+from ._http import translate_openai_errors
 from .types import RankedDocument, Timing, Usage
 
 _SYSTEM_PROMPT = (
@@ -33,7 +34,8 @@ async def generate(
     client: AsyncOpenAI, query: str, sources: list[RankedDocument], model: str,
 ) -> tuple[str, Usage, Timing]:
     start = time.perf_counter()
-    response = await client.chat.completions.create(model=model, messages=_build_messages(query, sources))
+    with translate_openai_errors():
+        response = await client.chat.completions.create(model=model, messages=_build_messages(query, sources))
     elapsed_ms = (time.perf_counter() - start) * 1000
 
     answer = response.choices[0].message.content or ""
@@ -44,10 +46,11 @@ async def generate(
 async def generate_stream(
     client: AsyncOpenAI, query: str, sources: list[RankedDocument], model: str,
 ) -> AsyncIterator[str]:
-    stream = await client.chat.completions.create(
-        model=model, messages=_build_messages(query, sources), stream=True,
-    )
-    async for chunk in stream:
-        delta = chunk.choices[0].delta.content
-        if delta:
-            yield delta
+    with translate_openai_errors():
+        stream = await client.chat.completions.create(
+            model=model, messages=_build_messages(query, sources), stream=True,
+        )
+        async for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta

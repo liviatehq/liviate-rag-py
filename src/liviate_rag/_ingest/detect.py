@@ -4,12 +4,16 @@ No network calls, no file reads beyond an existence check. This isolation
 is what makes the dispatch logic unit-testable without mocking the
 filesystem or network — see tests/unit/test_ingest_detect.py.
 
-Detection order (source_type="auto"):
-1. list/tuple -> batch
-2. existing local path -> file
-3. http(s):// string -> url
-4. object with .read() -> stream
-5. anything else -> ValueError (raw strings are never silently treated as
+Batch detection (list/tuple) happens before source_type is even considered,
+regardless of its value -- so `ingest(["a", "b"], source_type="text")` is a
+valid two-item text batch, not a TypeError. Each item is then classified
+individually with the same source_type (see _ingest/handlers.py).
+
+Detection order for a single (non-batch) source, when source_type="auto":
+1. existing local path -> file
+2. http(s):// string -> url
+3. object with .read() -> stream
+4. anything else -> ValueError (raw strings are never silently treated as
    text; source_type="text" must be explicit)
 """
 
@@ -30,6 +34,9 @@ class Classification:
 
 
 def classify(source: Any, source_type: str = "auto") -> Classification:
+    if isinstance(source, (list, tuple)):
+        return Classification("batch", list(source))
+
     if source_type == "text":
         if not isinstance(source, str):
             raise ValueError(
@@ -45,9 +52,6 @@ def classify(source: Any, source_type: str = "auto") -> Classification:
 
     if source_type != "auto":
         raise ValueError(f"Unknown source_type: {source_type!r}")
-
-    if isinstance(source, (list, tuple)):
-        return Classification("batch", list(source))
 
     if isinstance(source, Path) or (isinstance(source, str) and os.path.exists(source)):
         return Classification("file", Path(source))

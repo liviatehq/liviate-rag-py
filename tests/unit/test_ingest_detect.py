@@ -20,6 +20,16 @@ def test_batch_list_detected():
     assert result.value == ["a.pdf", "b.pdf"]
 
 
+def test_batch_detected_regardless_of_explicit_source_type():
+    # Regression test: batch detection used to only run inside the "auto" branch, so
+    # classify(["text a", "text b"], source_type="text") raised ValueError("requires source to
+    # be a str, got list") instead of recognizing a two-item batch.
+    for source_type in ("text", "file", "url"):
+        result = classify(["a", "b"], source_type=source_type)
+        assert result.kind == "batch"
+        assert result.value == ["a", "b"]
+
+
 def test_batch_tuple_detected():
     result = classify(("a.pdf", "b.pdf"))
     assert result.kind == "batch"

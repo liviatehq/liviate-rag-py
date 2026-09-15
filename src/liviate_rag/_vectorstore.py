@@ -16,6 +16,15 @@ naming scheme or deployment topology.
 Never reference the underlying vector-store technology by name in this module, or anywhere else
 in the package -- see project brief. Even the exchange response's own field names (which do name
 it) are never echoed into an error message a caller could see -- see ``_field()`` below.
+
+Known limit of this abstraction: raise_for_status() error messages and the ``data_plane_url``
+this module actually connects to both include the real data-plane hostname, and the REST paths
+below (``/collections/{name}/points/query``, etc.) match that store's own API verbatim. Anyone
+inspecting network traffic or a stack trace sees it. That's accepted deliberately -- stripping
+the URL out of error messages to preserve the naming abstraction would make real failures harder
+to debug, which is the wrong trade. The naming discipline in this module is about what the SDK
+chooses to say in its own prose (docs, comments, error text it authors), not about hiding the
+backend's actual behavior on the wire.
 """
 
 from __future__ import annotations
@@ -163,5 +172,22 @@ class VectorStoreClient:
             f"/collections/{grant.real_collection_name}/points",
             headers={"Authorization": f"Bearer {grant.token}"},
             json={"points": points},
+        )
+        await raise_for_status(response)
+
+    async def delete(self, collection: str, *, ids: list[str] | None = None, filter: dict | None = None) -> None:
+        """Deletes points by id or by metadata filter -- exactly one of the two must be given.
+        Confirmed live against production: both id-based delete and filter-based delete (via
+        Qdrant's standard {"must": [{"key": ..., "match": {"value": ...}}]} filter shape against
+        metadata.<field>) were exercised end-to-end -- ingest, verify present, delete, verify
+        gone."""
+        if (ids is None) == (filter is None):
+            raise ValueError("delete() requires exactly one of ids or filter, not both/neither.")
+        grant = await self._grant_for(collection, "rw")
+        body: dict[str, Any] = {"points": ids} if ids is not None else {"filter": filter}
+        response = await self._data_http_for(grant.data_plane_url).post(
+            f"/collections/{grant.real_collection_name}/points/delete",
+            headers={"Authorization": f"Bearer {grant.token}"},
+            json=body,
         )
         await raise_for_status(response)

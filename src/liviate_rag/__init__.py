@@ -3,6 +3,7 @@
 from ._async_client import AsyncRAGClient
 from ._client import RAGClient
 from .exceptions import (
+    APIError,
     IngestTimeout,
     LiviateError,
     PartialIngestError,
@@ -36,6 +37,7 @@ __all__ = [
     "Usage",
     "Timing",
     "LiviateError",
+    "APIError",
     "UnsupportedFileType",
     "IngestTimeout",
     "PartialIngestError",

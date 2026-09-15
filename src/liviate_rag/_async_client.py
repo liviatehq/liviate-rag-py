@@ -116,6 +116,13 @@ class AsyncRAGClient:
     async def rerank(self, query: str, documents: list[str], model: str = DEFAULT_RERANK_MODEL) -> RerankResult:
         return await _rerank(self._http, query, documents, model)
 
+    # -- delete ------------------------------------------------
+
+    async def delete(self, collection: str, *, ids: list[str] | None = None, filter: dict | None = None) -> None:
+        """Removes points from a collection by id (e.g. ``result.point_ids`` from a prior
+        ingest()) or by metadata filter -- exactly one of the two must be given."""
+        await self._vectorstore.delete(collection, ids=ids, filter=filter)
+
     # -- retrieve / query ------------------------------------------------
 
     async def retrieve(
@@ -125,11 +132,16 @@ class AsyncRAGClient:
         *,
         top_k: int = 5,
         filter: dict | None = None,
+        embed_model: str = DEFAULT_EMBED_MODEL,
         rerank_model: str | None = DEFAULT_RERANK_MODEL,
     ) -> RetrieveResult:
+        """``embed_model`` must match whatever model the collection was
+        ingested with (see ``ingest(..., embed_model=...)``) -- embedding a
+        query with a different model than the collection's vectors either
+        returns garbage or hard-fails on a dimension mismatch."""
         return await run_retrieval(
             vectorstore=self._vectorstore, http=self._http, embed_client=self._openai, query=query,
-            collection=collection, top_k=top_k, filter=filter, rerank_model=rerank_model,
+            collection=collection, top_k=top_k, filter=filter, embed_model=embed_model, rerank_model=rerank_model,
         )
 
     async def query(
@@ -140,12 +152,16 @@ class AsyncRAGClient:
         model: str,
         top_k: int = 5,
         filter: dict | None = None,
+        embed_model: str = DEFAULT_EMBED_MODEL,
+        rerank_model: str | None = DEFAULT_RERANK_MODEL,
         stream: bool = False,
     ) -> QueryResult | AsyncIterator[str]:
         """``model`` has no Liviate default: generation is deliberately kept
         out of the bundled RAG product (see brief) so the caller always
         names their own Inference model explicitly."""
-        retrieval = await self.retrieve(query, collection, top_k=top_k, filter=filter)
+        retrieval = await self.retrieve(
+            query, collection, top_k=top_k, filter=filter, embed_model=embed_model, rerank_model=rerank_model,
+        )
 
         if stream:
             return _generate_stream(self._openai, query, retrieval.sources, model)

@@ -10,6 +10,7 @@ import time
 
 from openai import AsyncOpenAI
 
+from ._http import translate_openai_errors
 from .types import EmbedResult, EmbedUsage, Timing
 
 DEFAULT_EMBED_MODEL = "liviate/embedding"
@@ -17,7 +18,8 @@ DEFAULT_EMBED_MODEL = "liviate/embedding"
 
 async def embed(client: AsyncOpenAI, texts: list[str], model: str) -> EmbedResult:
     start = time.perf_counter()
-    response = await client.embeddings.create(model=model, input=texts)
+    with translate_openai_errors():
+        response = await client.embeddings.create(model=model, input=texts)
     elapsed_ms = (time.perf_counter() - start) * 1000
 
     vectors = [item.embedding for item in response.data]

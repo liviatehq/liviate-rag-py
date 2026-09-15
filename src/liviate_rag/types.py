@@ -79,6 +79,9 @@ class IngestResult:
     collection: str
     warnings: list[str] = field(default_factory=list)
     per_source: list["IngestResult"] | None = None
+    point_ids: list[str] = field(default_factory=list)
+    """Vector-store point IDs this ingest wrote, so the content can later be
+    removed with ``client.delete(collection, ids=result.point_ids)``."""
     """Populated only for batch ingest (one entry per input item)."""
 
 

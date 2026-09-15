@@ -5,6 +5,8 @@ these tests assert that shared path stays intact (both produce identical
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from pytest_httpserver import HTTPServer
 
@@ -90,6 +92,45 @@ async def test_query_reuses_retrieve_and_adds_generation(async_client, mock_serv
     assert result.sources[0].text == "We have free parking."
     assert result.usage.generation_tokens == 8
     assert result.timing.generate_ms >= 0
+
+
+async def test_retrieve_passes_custom_embed_model_through(async_client, mock_server: HTTPServer):
+    # Regression test: retrieve()/query() used to have no embed_model parameter at all, so a
+    # collection ingested with a non-default embed model could never be queried correctly --
+    # the query would always be embedded with the default model instead. Asserting on the
+    # captured request body's "model" field (rather than an exact-body matcher, since the
+    # openai client adds its own fields like encoding_format) means this only passes if
+    # embed_model actually reaches the /v1/embeddings call.
+    mock_server.expect_request("/v1/embeddings", method="POST").respond_with_json(
+        {
+            "object": "list",
+            "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2]}],
+            "model": "custom/embedding-v2",
+            "usage": {"prompt_tokens": 3, "total_tokens": 3},
+        }
+    )
+    mock_server.expect_request("/api/tenancy/vectordb/exchange-token/", method="POST").respond_with_json(
+        {
+            "token": "scoped-jwt",
+            "access": "r",
+            "expires_at": 9999999999,
+            "collection_name": "testtenant__hotel-kirstine",
+            "qdrant_url": mock_server.url_for("/").rstrip("/"),
+        }
+    )
+    mock_server.expect_request("/collections/testtenant__hotel-kirstine/points/query", method="POST").respond_with_json(
+        {"result": {"points": []}}
+    )
+
+    result = await async_client.retrieve(
+        "Har I parkering?", collection="hotel-kirstine", embed_model="custom/embedding-v2",
+    )
+    assert result.usage.embed_tokens == 3
+
+    embed_requests = [req for req, _resp in mock_server.log if req.path == "/v1/embeddings"]
+    assert len(embed_requests) == 1
+    sent_body = json.loads(embed_requests[0].get_data())
+    assert sent_body["model"] == "custom/embedding-v2"
 
 
 async def test_retrieve_raises_on_point_with_no_text_payload(async_client, mock_server: HTTPServer):
