@@ -42,16 +42,30 @@ async with AsyncRAGClient() as client:
 ## Ingest
 
 `ingest()` handles a single file, URL, text string, or file-like stream —
-detecting which one automatically. See the source docstrings in
-`_ingest/detect.py` and `_ingest/handlers.py` for the exact detection order
-and supported file types (`.pdf`, `.docx`, `.md`, `.txt`, `.csv`, `.json`,
-`.html`).
+detecting which one automatically from content, never a filename
+extension. See `_ingest/detect.py` for the exact detection order.
 
-Whole-site crawling is a separate, explicit call:
+### Supported file types
 
-```python
-client.ingest_site("https://example.com", collection="x", max_pages=200)
-```
+| Type | Extension |
+|---|---|
+| PDF | `.pdf` |
+| Word | `.docx` |
+| Markdown | `.md` |
+| Plain text | `.txt` |
+| CSV | `.csv` |
+| JSON | `.json` |
+| HTML | `.html` |
+
+Plus raw text (`source_type="text"`) and URLs (a single page is scraped or
+downloaded automatically depending on its content type).
+
+OCR / scanned images are explicitly out of scope for v1 — `ingest()`
+raises `UnsupportedFileType` rather than failing silently or half-parsing.
+
+Whole-site crawling (`ingest_site()`) is **not yet implemented** — it
+raises `NotImplementedError`. Use `ingest()` with a list of individual page
+URLs in the meantime; it already accepts a batch of sources in one call.
 
 ## Development
 
@@ -63,7 +77,8 @@ LIVIATE_E2E=1 pytest tests/e2e         # real environment, run manually
 
 ## Status
 
-This is a v1 scaffold. A few request/response shapes are built against
-reasonable assumptions pending confirmation from the live backend — see the
-"NOTE"/"ASSUMPTION" comments in `_rerank.py`, `_pipeline.py`, and
-`_ingest/handlers.py` before relying on them in production.
+`0.1.0` is published on [TestPyPI](https://test.pypi.org/project/liviate-rag/)
+and verified end-to-end against production (`ingest` → `retrieve` →
+`query`, including generation). Not yet on the real PyPI. `ingest_site()`
+is not yet implemented (see above); `PartialIngestError` is defined but not
+yet raised anywhere (see `exceptions.py` for why).
