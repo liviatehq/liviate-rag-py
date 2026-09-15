@@ -124,7 +124,7 @@ async def _ingest_one(
         {"id": point_id, "vector": vector, "payload": {"text": chunk, "metadata": metadata or {}}}
         for point_id, chunk, vector in zip(point_ids, chunks, embed_result.vectors)
     ]
-    await vectorstore.upsert(collection, points)
+    await vectorstore.upsert(collection, points, embed_model=embed_model)
     return IngestResult(
         chunks_created=len(chunks), source_type=source_type, collection=collection,
         warnings=[], point_ids=point_ids,
@@ -153,6 +153,17 @@ async def _ingest_batch(
         warnings.extend(result.warnings)
         total_chunks += result.chunks_created
     point_ids = [pid for r in per_source for pid in r.point_ids]
+
+    # If every item in a non-empty batch failed, nothing was ingested -- that's a total
+    # failure, not the "one bad item shouldn't abort the others" partial-failure case the
+    # per-item warning behavior above exists for. Raise instead of returning a success-shaped
+    # zero-chunk result a caller could easily miss without inspecting .warnings.
+    if items and total_chunks == 0 and warnings:
+        raise LiviateError(
+            f"All {len(items)} item(s) in this batch failed to ingest -- nothing was written. "
+            f"First error: {warnings[0]}"
+        )
+
     return IngestResult(
         chunks_created=total_chunks, source_type="batch", collection=collection,
         warnings=warnings, per_source=per_source, point_ids=point_ids,

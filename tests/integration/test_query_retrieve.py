@@ -159,3 +159,68 @@ async def test_retrieve_raises_on_point_with_no_text_payload(async_client, mock_
 
     with pytest.raises(LiviateError, match="no 'text' in its payload"):
         await async_client.retrieve("Har I parkering?", collection="hotel-kirstine", top_k=5)
+
+
+async def test_retrieve_falls_back_to_default_when_no_embed_model_recorded(async_client, mock_server: HTTPServer):
+    # Today's real exchange response never includes "embed_model" -- confirm the speculative
+    # auto-resolve path (_pipeline.run_retrieval) correctly falls back to the hardcoded default
+    # rather than erroring or sending None as a model string.
+    mock_server.expect_request("/v1/embeddings", method="POST").respond_with_json(
+        {
+            "object": "list",
+            "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2]}],
+            "model": "liviate/embedding",
+            "usage": {"prompt_tokens": 3, "total_tokens": 3},
+        }
+    )
+    mock_server.expect_request("/api/tenancy/vectordb/exchange-token/", method="POST").respond_with_json(
+        {
+            "token": "scoped-jwt",
+            "access": "r",
+            "expires_at": 9999999999,
+            "collection_name": "testtenant__docs",
+            "qdrant_url": mock_server.url_for("/").rstrip("/"),
+            # "embed_model" deliberately absent -- matches every real response today.
+        }
+    )
+    mock_server.expect_request("/collections/testtenant__docs/points/query", method="POST").respond_with_json(
+        {"result": {"points": []}}
+    )
+
+    await async_client.retrieve("query", collection="docs")
+
+    embed_requests = [req for req, _resp in mock_server.log if req.path == "/v1/embeddings"]
+    sent_body = json.loads(embed_requests[0].get_data())
+    assert sent_body["model"] == "liviate/embedding"
+
+
+async def test_retrieve_auto_resolves_recorded_embed_model_when_present(async_client, mock_server: HTTPServer):
+    # Forward-compat check: IF a future backend ever returns "embed_model" on the exchange
+    # response, retrieve() should use it automatically without the caller passing embed_model=.
+    mock_server.expect_request("/v1/embeddings", method="POST").respond_with_json(
+        {
+            "object": "list",
+            "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2]}],
+            "model": "collection-recorded/embedding-v3",
+            "usage": {"prompt_tokens": 3, "total_tokens": 3},
+        }
+    )
+    mock_server.expect_request("/api/tenancy/vectordb/exchange-token/", method="POST").respond_with_json(
+        {
+            "token": "scoped-jwt",
+            "access": "r",
+            "expires_at": 9999999999,
+            "collection_name": "testtenant__docs",
+            "qdrant_url": mock_server.url_for("/").rstrip("/"),
+            "embed_model": "collection-recorded/embedding-v3",
+        }
+    )
+    mock_server.expect_request("/collections/testtenant__docs/points/query", method="POST").respond_with_json(
+        {"result": {"points": []}}
+    )
+
+    await async_client.retrieve("query", collection="docs")
+
+    embed_requests = [req for req, _resp in mock_server.log if req.path == "/v1/embeddings"]
+    sent_body = json.loads(embed_requests[0].get_data())
+    assert sent_body["model"] == "collection-recorded/embedding-v3"

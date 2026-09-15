@@ -1,8 +1,21 @@
 """Exception hierarchy for liviate-rag.
 
-ingest() raises the builtin ``ValueError`` directly (not a subclass) when it
-can't classify a source — matches the API reference literally. Every other
-SDK-specific error inherits from ``LiviateError``.
+Two distinct kinds of error, on purpose:
+
+- **Caller mistakes** (bad arguments, a source ingest() can't classify)
+  raise the builtin ``ValueError`` directly, never a ``LiviateError``
+  subclass. Examples: ``ingest()`` given a source it can't classify,
+  ``delete()`` given both/neither of ``ids``/``filter``. These are bugs in
+  the calling code, not something a backend outage could ever cause, so
+  ``except LiviateError`` deliberately does NOT catch them -- catch
+  ``ValueError`` separately (or fix the call) if you need to handle these.
+- **Backend/runtime failures** (a bad response from the Liviate API, a
+  timeout, an unsupported file's content) raise ``LiviateError`` or one of
+  its subclasses below. ``except LiviateError`` reliably catches every one
+  of these, regardless of which HTTP transport made the call (the plain
+  httpx-based calls and the ones routed through the ``openai`` client for
+  embed()/generation both get wrapped the same way -- see
+  ``_http.raise_for_status`` and ``_http.translate_openai_errors``).
 """
 
 from __future__ import annotations

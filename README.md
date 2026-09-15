@@ -67,10 +67,13 @@ Whole-site crawling (`ingest_site()`) is **not yet implemented** — it
 raises `NotImplementedError`. Use `ingest()` with a list of individual page
 URLs in the meantime; it already accepts a batch of sources in one call.
 
-If you ingest into a collection with a non-default `embed_model=`, pass the
-same `embed_model=` to `retrieve()`/`query()` when querying it — a query
-embedded with a different model than the collection's vectors either
-returns garbage or fails outright on a dimension mismatch.
+If you ingest into a collection with a non-default `embed_model=`,
+`retrieve()`/`query()` try to resolve the right model automatically —
+today's backend doesn't yet record which model created a collection, so
+until it does, pass the same `embed_model=` explicitly when querying it. A
+query embedded with a different model than the collection's vectors either
+returns garbage or fails outright on a dimension mismatch, so this is
+worth getting right rather than relying on the not-yet-live auto-detection.
 
 ## Removing content
 
@@ -82,13 +85,27 @@ client.delete("hotel-kirstine", filter={"must": [...]})        # by metadata fil
 
 ## Errors
 
-Every error from the Liviate API — whatever the underlying transport,
-including calls routed through the `openai` client for `embed()`/`query()`'s
-generation step — surfaces as this package's own exception hierarchy
-(`liviate_rag.LiviateError` and subclasses: `APIError`, `RateLimitError`,
-`UnsupportedFileType`, `IngestTimeout`), never a raw `httpx`/`openai`
-exception. The one deliberate exception: `ingest()` raises the builtin
-`ValueError` when it can't classify a source.
+Two distinct kinds of error, on purpose:
+
+- **Backend/runtime failures** — a bad response from the Liviate API, a
+  timeout, an unsupported file type — always surface as
+  `liviate_rag.LiviateError` or a subclass (`APIError`, `RateLimitError`,
+  `UnsupportedFileType`, `IngestTimeout`), whatever the underlying
+  transport, including calls routed through the `openai` client for
+  `embed()`/`query()`'s generation step. `except LiviateError` reliably
+  catches all of these.
+- **Caller mistakes** — a source `ingest()` can't classify, calling
+  `delete()` with both/neither of `ids`/`filter` — raise the builtin
+  `ValueError` directly, never a `LiviateError`. These are bugs in the
+  calling code, not something `except LiviateError` is meant to catch;
+  handle `ValueError` separately if you need to.
+
+`ingest()` on a batch (list of sources) is worth calling out specifically:
+if some items fail but at least one succeeds, the call still returns
+normally — failures show up in `result.warnings`, per the API reference's
+"one bad item shouldn't abort the batch" design. But if *every* item in
+the batch fails, nothing was ingested, and that raises `LiviateError`
+rather than returning a quiet zero-chunk "success."
 
 ## Development
 

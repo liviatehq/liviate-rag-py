@@ -25,6 +25,19 @@ the URL out of error messages to preserve the naming abstraction would make real
 to debug, which is the wrong trade. The naming discipline in this module is about what the SDK
 chooses to say in its own prose (docs, comments, error text it authors), not about hiding the
 backend's actual behavior on the wire.
+
+SPECULATIVE, forward-compatible only -- not yet confirmed against a real backend contract (see
+_grant_for's ``embed_model`` parameter and ``_CachedGrant.recorded_embed_model``): this module
+opportunistically sends the embed model on a write-access exchange (so the tenancy service COULD
+record it against the collection, if/when it supports that) and opportunistically reads an
+``embed_model`` field back out of any exchange response (so retrieve()/query() could resolve a
+collection's embed model automatically instead of requiring the caller to remember and repeat it
+-- see _pipeline.run_retrieval). Today's real exchange endpoint doesn't recognize the field on
+the way in and doesn't send it on the way out, so right now this is a no-op in both directions --
+never required, never assumed present. Implementing the matching server-side half (recording
+which embed_model first created a collection, returning it in the exchange response) is out of
+scope for this client and hasn't been done -- this is groundwork for that, not a claim that it
+works end-to-end yet.
 """
 
 from __future__ import annotations
@@ -59,12 +72,21 @@ def _field(body: dict, key: str, description: str) -> Any:
 
 
 class _CachedGrant:
-    __slots__ = ("token", "data_plane_url", "real_collection_name", "_expires_at_monotonic")
+    __slots__ = (
+        "token", "data_plane_url", "real_collection_name", "recorded_embed_model",
+        "_expires_at_monotonic",
+    )
 
-    def __init__(self, token: str, data_plane_url: str, real_collection_name: str, ttl_seconds: float):
+    def __init__(
+        self, token: str, data_plane_url: str, real_collection_name: str, ttl_seconds: float,
+        recorded_embed_model: str | None = None,
+    ):
         self.token = token
         self.data_plane_url = data_plane_url.rstrip("/")
         self.real_collection_name = real_collection_name
+        # None today, always -- see module docstring's "SPECULATIVE" note. Populated only if a
+        # future exchange response ever includes this field.
+        self.recorded_embed_model = recorded_embed_model
         self._expires_at_monotonic = time.monotonic() + ttl_seconds
 
     @property
@@ -102,7 +124,9 @@ class VectorStoreClient:
             self._data_http_by_base[base_url] = client
         return client
 
-    async def _grant_for(self, collection: str, access: str, vector_size: int | None = None) -> _CachedGrant:
+    async def _grant_for(
+        self, collection: str, access: str, vector_size: int | None = None, embed_model: str | None = None,
+    ) -> _CachedGrant:
         key = (collection, access)
         cached = self._cache.get(key)
         if cached is not None and cached.usable:
@@ -124,6 +148,11 @@ class VectorStoreClient:
                 # first" step through the console UI before a customer's very first ingest()
                 # can succeed.
                 data["vector_size"] = str(vector_size)
+            if embed_model is not None:
+                # SPECULATIVE (see module docstring) -- today's exchange endpoint ignores this
+                # field entirely. Sent anyway so the tenancy service can start recording it the
+                # moment it's taught to, with zero client-side change needed at that point.
+                data["embed_model"] = embed_model
             # NOTE: this endpoint genuinely expects form-encoded data, unlike every other
             # Liviate API call in this package (confirmed live: json= gets a 400 here). Verified
             # against production -- don't "fix" this to json= again without re-confirming.
@@ -144,9 +173,20 @@ class VectorStoreClient:
                 data_plane_url=_field(body, "qdrant_url", "data-plane URL"),
                 real_collection_name=_field(body, "collection_name", "tenant-namespaced collection name"),
                 ttl_seconds=ttl_seconds,
+                # SPECULATIVE (see module docstring) -- .get(), not _field(): this field doesn't
+                # exist in today's real response, and that must stay a silent no-op, not an error.
+                recorded_embed_model=body.get("embed_model"),
             )
             self._cache[key] = grant
             return grant
+
+    async def get_recorded_embed_model(self, collection: str) -> str | None:
+        """Returns the embed model recorded against this collection at ingest time, or None if
+        none is recorded (true for every collection today -- see module docstring). Reuses
+        retrieve()'s own grant cache, so calling this before a search() against the same
+        collection costs no extra network round trip."""
+        grant = await self._grant_for(collection, "r")
+        return grant.recorded_embed_model
 
     async def search(
         self, collection: str, vector: list[float], top_k: int, filter: dict | None,
@@ -163,11 +203,13 @@ class VectorStoreClient:
         await raise_for_status(response)
         return response.json()["result"]["points"]
 
-    async def upsert(self, collection: str, points: list[dict[str, Any]]) -> None:
+    async def upsert(self, collection: str, points: list[dict[str, Any]], embed_model: str | None = None) -> None:
         """points: ``[{"id": ..., "vector": [...], "payload": {"text": ..., "metadata": {...}}}]``
-        -- ``id`` must be a UUID string or unsigned integer (the data-plane's own requirement)."""
+        -- ``id`` must be a UUID string or unsigned integer (the data-plane's own requirement).
+        ``embed_model`` is sent to the exchange endpoint (see module docstring's "SPECULATIVE"
+        note) so a future backend could record which model created this collection."""
         vector_size = len(points[0]["vector"]) if points else None
-        grant = await self._grant_for(collection, "rw", vector_size=vector_size)
+        grant = await self._grant_for(collection, "rw", vector_size=vector_size, embed_model=embed_model)
         response = await self._data_http_for(grant.data_plane_url).put(
             f"/collections/{grant.real_collection_name}/points",
             headers={"Authorization": f"Bearer {grant.token}"},

@@ -124,11 +124,13 @@ class RAGClient:
         *,
         top_k: int = 5,
         filter: dict | None = None,
-        embed_model: str = "liviate/embedding",
+        embed_model: str | None = None,
         rerank_model: str | None = "liviate/rerank",
     ) -> RetrieveResult:
         """``embed_model`` must match whatever model the collection was
-        ingested with (see ``ingest(..., embed_model=...)``)."""
+        ingested with (see ``ingest(..., embed_model=...)``). Leave it
+        unset (the default) to resolve it automatically, when the backend
+        has that on record."""
         return self._loop.run(
             self._async.retrieve(
                 query, collection, top_k=top_k, filter=filter, embed_model=embed_model, rerank_model=rerank_model,
@@ -143,7 +145,7 @@ class RAGClient:
         model: str,
         top_k: int = 5,
         filter: dict | None = None,
-        embed_model: str = "liviate/embedding",
+        embed_model: str | None = None,
         rerank_model: str | None = "liviate/rerank",
         stream: bool = False,
     ) -> QueryResult | Iterator[str]:
@@ -158,7 +160,7 @@ class RAGClient:
 
     def _sync_stream(
         self, query: str, collection: str, model: str, top_k: int, filter: dict | None,
-        embed_model: str, rerank_model: str | None,
+        embed_model: str | None, rerank_model: str | None,
     ) -> Iterator[str]:
         async_gen = self._loop.run(
             self._async.query(

@@ -55,15 +55,25 @@ async def run_retrieval(
     collection: str,
     top_k: int,
     filter: dict | None,
-    embed_model: str = DEFAULT_EMBED_MODEL,
+    embed_model: str | None = None,
     rerank_model: str | None = DEFAULT_RERANK_MODEL,
 ) -> RetrieveResult:
     """embed(query) -> vector_search(collection) -> optional rerank().
 
     Shared by query() and retrieve() (both clients) so the two methods
     can't drift out of sync with each other.
+
+    ``embed_model=None`` (the default) means "resolve automatically": use the embed model
+    recorded against this collection at ingest time, if the backend has one on record (see
+    VectorStoreClient.get_recorded_embed_model -- speculative/forward-compatible, a no-op
+    against today's real backend), otherwise fall back to DEFAULT_EMBED_MODEL. An explicit
+    embed_model always overrides both.
     """
-    embed_result = await embed(embed_client, [query], embed_model)
+    resolved_embed_model = embed_model
+    if resolved_embed_model is None:
+        resolved_embed_model = await vectorstore.get_recorded_embed_model(collection) or DEFAULT_EMBED_MODEL
+
+    embed_result = await embed(embed_client, [query], resolved_embed_model)
     embed_vector = embed_result.vectors[0]
 
     retrieve_start = time.perf_counter()

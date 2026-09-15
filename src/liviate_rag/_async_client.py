@@ -132,13 +132,16 @@ class AsyncRAGClient:
         *,
         top_k: int = 5,
         filter: dict | None = None,
-        embed_model: str = DEFAULT_EMBED_MODEL,
+        embed_model: str | None = None,
         rerank_model: str | None = DEFAULT_RERANK_MODEL,
     ) -> RetrieveResult:
         """``embed_model`` must match whatever model the collection was
         ingested with (see ``ingest(..., embed_model=...)``) -- embedding a
         query with a different model than the collection's vectors either
-        returns garbage or hard-fails on a dimension mismatch."""
+        returns garbage or hard-fails on a dimension mismatch. Leave it
+        unset (the default) to resolve it automatically from what the
+        collection was ingested with, when the backend has that on record
+        -- see ``_pipeline.run_retrieval``."""
         return await run_retrieval(
             vectorstore=self._vectorstore, http=self._http, embed_client=self._openai, query=query,
             collection=collection, top_k=top_k, filter=filter, embed_model=embed_model, rerank_model=rerank_model,
@@ -152,7 +155,7 @@ class AsyncRAGClient:
         model: str,
         top_k: int = 5,
         filter: dict | None = None,
-        embed_model: str = DEFAULT_EMBED_MODEL,
+        embed_model: str | None = None,
         rerank_model: str | None = DEFAULT_RERANK_MODEL,
         stream: bool = False,
     ) -> QueryResult | AsyncIterator[str]:
