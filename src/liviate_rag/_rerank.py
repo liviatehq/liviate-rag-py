@@ -1,12 +1,11 @@
 """rerank() implementation.
 
-NOTE: as of this writing, the internal LiteLLM fork's rerank routing to the
-self-hosted reranking backend may still be in progress. Response parsing
-below assumes a Cohere-shaped payload (``results: [{index,
-relevance_score}]``), matching LiteLLM's own upstream rerank convention —
-this is an assumption, not a confirmed contract. Everything that depends on
-the response shape is isolated in ``_parse_rerank_response`` so a real spec
-mismatch is a one-function fix.
+Response parsing below expects a Cohere-shaped payload (``results:
+[{index, relevance_score}]``), matching LiteLLM's own upstream rerank
+convention. Confirmed live against production (verified via retrieve()/
+query() end-to-end runs, which exercise this exact code path). Still
+isolated in ``_parse_rerank_response`` so a future spec change on
+Liviate's side is a one-function fix.
 """
 
 from __future__ import annotations
@@ -40,8 +39,8 @@ async def rerank(http: httpx.AsyncClient, query: str, documents: list[str], mode
 
 
 def _parse_rerank_response(payload: dict, documents: list[str]) -> list[RankedDocument]:
-    """Assumes Cohere-shaped ``results: [{index, relevance_score}]``. VERIFY
-    against the live endpoint before release — see module docstring."""
+    """Cohere-shaped ``results: [{index, relevance_score}]`` — confirmed
+    live, see module docstring."""
     results = payload["results"]
     ranked = [
         RankedDocument(
