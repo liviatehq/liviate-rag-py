@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "liviate-rag"
-version = "0.1.0"
+version = "0.1.1"
 description = "Client SDK for Liviate's RAG stack: ingest, embed, retrieve, rerank, and (optionally) generate."
 readme = "README.md"
 requires-python = ">=3.10"
