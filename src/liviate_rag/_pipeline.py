@@ -65,9 +65,8 @@ async def run_retrieval(
 
     ``embed_model=None`` (the default) means "resolve automatically": use the embed model
     recorded against this collection at ingest time, if the backend has one on record (see
-    VectorStoreClient.get_recorded_embed_model -- speculative/forward-compatible, a no-op
-    against today's real backend), otherwise fall back to DEFAULT_EMBED_MODEL. An explicit
-    embed_model always overrides both.
+    VectorStoreClient.get_recorded_embed_model), otherwise fall back to DEFAULT_EMBED_MODEL. An
+    explicit embed_model always overrides both.
     """
     resolved_embed_model = embed_model
     if resolved_embed_model is None:
