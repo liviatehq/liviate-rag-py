@@ -88,26 +88,6 @@ class AsyncRAGClient:
 
         return AsyncIngestJob(job_ids=[job_id], collection=collection, _poll_fn=_poll)
 
-    async def ingest_site(
-        self,
-        source: str,
-        collection: str,
-        *,
-        max_pages: int = 50,
-        wait: bool = False,
-        metadata: dict | None = None,
-        timeout: float | None = None,
-    ) -> IngestResult | AsyncIngestJob:
-        """Not yet implemented. Whole-site crawling (following internal links, respecting
-        robots.txt, paging through up to max_pages) is a genuinely separate feature from
-        ingest()'s single-source path -- it needs its own real engineering (crawl frontier,
-        politeness/rate limiting, dedup), not a rushed version bolted onto ingest()'s pipeline.
-        Raises rather than pretending to support this."""
-        raise NotImplementedError(
-            "ingest_site() is not yet implemented. Use ingest() with a list of individual page "
-            "URLs in the meantime -- it already accepts a batch of sources in one call."
-        )
-
     # -- embed / rerank ------------------------------------------------
 
     async def embed(self, texts: list[str], model: str = DEFAULT_EMBED_MODEL) -> EmbedResult:

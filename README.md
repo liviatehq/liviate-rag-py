@@ -63,9 +63,11 @@ downloaded automatically depending on its content type).
 OCR / scanned images are explicitly out of scope for v1 — `ingest()`
 raises `UnsupportedFileType` rather than failing silently or half-parsing.
 
-Whole-site crawling (`ingest_site()`) is **not yet implemented** — it
-raises `NotImplementedError`. Use `ingest()` with a list of individual page
-URLs in the meantime; it already accepts a batch of sources in one call.
+Whole-site crawling isn't part of this SDK — that's a genuinely different
+problem (robots.txt compliance, politeness/rate limiting, avoiding crawl
+traps) than ingesting sources you already have. Crawl with whatever tool
+you already use, then pass the resulting URL list to `ingest()` — it
+already accepts a batch of sources in one call.
 
 If you ingest into a collection with a non-default `embed_model=`,
 `retrieve()`/`query()` try to resolve the right model automatically —

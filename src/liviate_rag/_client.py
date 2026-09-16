@@ -80,21 +80,6 @@ class RAGClient:
         )
         return outcome if wait else self._wrap_job(outcome)
 
-    def ingest_site(
-        self,
-        source: str,
-        collection: str,
-        *,
-        max_pages: int = 50,
-        wait: bool = False,
-        metadata: dict | None = None,
-        timeout: float | None = None,
-    ) -> IngestResult | IngestJob:
-        outcome = self._loop.run(
-            self._async.ingest_site(source, collection, max_pages=max_pages, wait=wait, metadata=metadata, timeout=timeout)
-        )
-        return outcome if wait else self._wrap_job(outcome)
-
     def _wrap_job(self, async_job) -> IngestJob:
         return IngestJob(
             job_ids=async_job.job_ids,
